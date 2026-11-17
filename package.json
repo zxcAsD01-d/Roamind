@@ -1,0 +1,56 @@
+{
+  "name": "roamind",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "service": "python3 scripts/run_component.py service --port 8100",
+    "mcp": "python3 scripts/run_component.py mcp",
+    "perception": "python3 scripts/run_component.py perception",
+    "setup:perception": "uv venv --python 3.11 .venv-perception && uv pip install --python .venv-perception/bin/python -r server/requirements-perception.txt",
+    "test:tracking": "python3 scripts/run_component.py python tests/test_tracking.py",
+    "test:behavior": "python3 scripts/run_component.py python -m unittest discover -s tests -p \"test_*behavior.py\" -v",
+    "test:preset": "python3 scripts/run_component.py python tests/test_motion_quality.py",
+    "test:library": "python3 scripts/run_component.py python tests/test_action_library.py",
+    "test:hast": "python3 scripts/run_component.py python scripts/compare_hast_sec.py",
+    "test:perception": "python3 scripts/run_component.py perception-python tests/perception_integration.py",
+    "test:stereo": "python3 scripts/run_component.py perception-python -m unittest discover -s tests -p 'test_stereo*.py' -v",
+    "test:touch": "python3 scripts/run_component.py perception-python tests/test_touch.py",
+    "test:contact": "python3 scripts/run_component.py perception-python tests/test_contact.py && node tests/contact_tracking.mjs",
+    "test:world": "python3 scripts/run_component.py python tests/test_world.py",
+    "test:continuity": "python3 scripts/run_component.py python tests/continuity_service.py",
+    "test:overlap": "python3 scripts/run_component.py python tests/test_overlap.py",
+    "test:benchmark": "python3 scripts/run_component.py python tests/benchmark.py",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "table:build": "python3 scripts/run_component.py python scripts/build_motion_table.py",
+    "table:collect": "python3 scripts/run_component.py python scripts/collect_ardy_table.py",
+    "supermimic:download": "python3 scripts/download_supermimic.py",
+    "supermimic:assets": "python3 scripts/run_component.py perception-python scripts/download_supermimic_test_assets.py",
+    "supermimic:service": "python3 scripts/run_component.py supermimic",
+    "supermimic:benchmark": "python3 scripts/run_component.py perception-python scripts/benchmark_supermimic.py",
+    "supermimic:tracking": "python3 scripts/run_component.py perception-python scripts/validate_supermimic_tracking.py",
+    "supermimic:optimize": "python3 scripts/run_component.py perception-python scripts/optimize_supermimic.py",
+    "test:supermimic": "python3 scripts/run_component.py perception-python -m unittest discover -s tests -p 'test_supermimic*.py' -v",
+    "test:table": "python3 scripts/run_component.py python -m unittest discover -s tests -p test_motion_table.py -v",
+    "test:mcp": "python3 scripts/run_component.py python -m unittest discover -s tests -p test_mcp_contract.py -v",
+    "test:core": "python3 scripts/run_component.py python scripts/test_core.py",
+    "setup:lumen": "python3 scripts/setup_lumen.py",
+    "perception:download": "python3 scripts/run_component.py perception-python server/download_perception.py"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "3.5.5",
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.183.1",
+    "typescript": "~5.9.3",
+    "vite": "7.3.8"
+  },
+  "description": "Local VRM social motion, visual memory and MCP execution environment",
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10"
+  }
+}

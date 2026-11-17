@@ -1,0 +1,7 @@
+# Optional isolated G1 validation/inference; no CUDA/IsaacLab installation required.
+numpy>=2.0,<3
+scipy>=1.14,<2
+safetensors==0.8.0
+torch>=2.11,<3
+mujoco==4.0.1
+mlx>=0.31; platform_system == "Darwin" and platform_machine == "arm64"

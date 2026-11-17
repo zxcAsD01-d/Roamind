@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>HAST-SEC 隔离动作对照</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#121722;color:#e2e9f5;font:14px system-ui,sans-serif}header{padding:16px 22px;background:#1c2535;display:flex;gap:12px;align-items:center;flex-wrap:wrap}strong{margin-right:12px}select,button{padding:8px;border:1px solid #526580;background:#283850;color:#fff;border-radius:6px}button{cursor:pointer}main{height:calc(100vh - 170px);min-height:360px;position:relative}canvas{width:100%;height:100%;display:block}.labels{position:absolute;top:14px;left:0;right:0;display:flex;justify-content:space-around;pointer-events:none}.labels span{background:#1c2535cf;padding:8px 16px;border-radius:8px}footer{padding:12px 22px;line-height:1.7;color:#b9c9df}input{width:220px;vertical-align:middle}#status{color:#95d7d3}#error{color:#ffa6a6}a{color:#9bc2ff}
+  </style>
+</head>
+<body>
+  <header><strong>HAST-SEC 动作对照 · Wolferia</strong><select id="case" aria-label="动作案例"></select><select id="method" aria-label="右侧算法">
+    <option value="hastResidual">位姿 / 速度残差</option><option value="hastLayers">动作层淡入</option>
+    <option value="hastDamped">二阶阻尼</option><option value="hastDampedPreserveRoot">二阶阻尼 · 保留根轨迹</option>
+    <option value="raw">原始硬切</option>
+  </select><button id="play">暂停</button><button id="restart">重新播放</button>
+  <input id="time" type="range" min="0" max="1" step="0.001" value="0" aria-label="播放时间"/><span id="stamp"></span></header>
+  <main id="stage"><div class="labels"><span>现有特殊动作八帧过渡</span><span id="right-label">HAST 位姿 / 速度残差</span></div></main>
+  <footer><div id="status">读取测试资源…</div><div id="error" role="alert"></div>同一动作、同一时间、原 VRM 重定向。移动测试保留原根运动；预设案例仅对比接缝算法，不代表主页面完整编排结果。<br/>
+  时间读数标出接缝；每轮末尾停留后重置整段预览。此页不发送控制命令，也不调用 ARDY。</footer>
+  <script type="module" src="/src/hast_comparison.ts"></script>
+</body>
+</html>

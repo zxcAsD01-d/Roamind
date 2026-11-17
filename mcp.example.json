@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "roamind": {
+      "command": "python3",
+      "args": ["/absolute/path/to/Roamind/scripts/run_component.py", "mcp"],
+      "env": {
+        "MOTION_LAB_URL": "http://127.0.0.1:8100",
+        "MOTION_PERCEPTION_URL": "http://127.0.0.1:8200"
+      }
+    }
+  }
+}

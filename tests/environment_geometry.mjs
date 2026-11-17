@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+await build({entryPoints:['src/geometry_clearance.ts'],bundle:true,platform:'node',format:'esm',outfile:'output/environment-upgrade/geometry.mjs'});
+const {segmentBoxDistanceSquared:distance}=await import('../output/environment-upgrade/geometry.mjs');
+assert.equal(distance([-1,0],[1,0],[0,0],[.001,.5]),0);
+assert.ok(Math.abs(distance([.8,.8],[1,1],[0,0],[.5,.5])-.18)<1e-10);
+assert.ok(Math.abs(distance([.8,0],[.8,0],[0,0],[.5,.5])-.09)<1e-10);
+assert.equal(distance([0,0],[0,0],[0,0],[.5,.5]),0);
+assert.equal(distance([-2,1],[2,1],[0,0],[.5,.5]),.25);
+const a=[1.5,-.7],b=[-1.5,1.4];
+assert.equal(distance(a,b,[0,0],[.2,.3]),distance(b,a,[0,0],[.2,.3]));
+console.log('前端连续圆形碰撞：薄墙、圆角、静止、内部、平行与反向检查通过');

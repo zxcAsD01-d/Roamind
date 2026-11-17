@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/sola1039/HAST-SEC",
+  "revision": "f4d5c9aa32f9d04e249585e0b2e6d4c56572ca51",
+  "modifications": "None. Only the runtime module dependency closure is vendored; models are installed separately.",
+  "modules": [
+    "motion/beat_layers.mjs",
+    "motion/feasible_math.mjs",
+    "motion/skill_rotation.mjs",
+    "motion/v9/damped_output.mjs",
+    "motion/v9/output_smoothing.mjs",
+    "retarget/rotation_math.mjs",
+    "training/beat_runtime.mjs",
+    "training/beat_runtime_v9.mjs",
+    "training/pilot_network.mjs"
+  ]
+}
