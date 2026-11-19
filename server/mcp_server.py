@@ -73,6 +73,13 @@ class AgentIntent(BaseModel):
             raise ValueError(f'{self.kind} 需要 {field}')
         return self
 
+class ArdyWorldGoal(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    action: Literal['navigate', 'face', 'wave', 'point']
+    target: Position
+    standOff: float | None = Field(default=None, ge=.8, le=2.5)
+
+
 BASE = os.environ.get("MOTION_LAB_URL", "http://127.0.0.1:8100")
 PERCEPTION_BASE = os.environ.get("MOTION_PERCEPTION_URL", "http://127.0.0.1:8200")
 mcp = FastMCP("motion-lab", instructions="控制本地 VRM 房屋仿真。高层控制先 get_agent_context，再 submit_agent_intent；自主行为只依赖视觉记忆。inspect_environment 是调试真值，不得冒充角色感知。所有坐标 Y-up、米、时间秒。move_to / execute_plan 返回命令 ID，必须查询状态确认执行；碰撞片段会拒绝播放。")
@@ -375,6 +382,24 @@ def get_visual_world(client_id: str) -> dict:
     if not client_id.strip():
         raise ValueError("client_id 不能为空")
     return request("/api/stereo/state?clientId=" + urllib.parse.quote(client_id, safe=""), base=PERCEPTION_BASE)
+
+
+@mcp.tool()
+def ardy_world_playback(operation: Literal['create', 'state', 'next', 'played', 'replan', 'close'],
+                        session_id: str | None = None, revision: int | None = None,
+                        perception_client_id: str | None = None, map_id: str | None = None,
+                        start: Position | None = None, start_heading: float | None = None,
+                        goal: ArdyWorldGoal | None = None, window_id: str | None = None,
+                        through_frame: int | None = None) -> dict:
+    """融合点云 ARDY 管线。create 需要视觉地图 ID、起始髋部位姿和目标；next 只生成待播放窗口。
+    播放器实际经过帧以后才能调用 played。replan 从最后确认帧起更新后续，旧窗口未播放的部分必须丢弃。
+    start 使用视觉里程计米制坐标，start_heading 单位为度。返回帧号是会话内绝对编号。
+    """
+    args = {'sessionId': session_id, 'revision': revision, 'perceptionClientId': perception_client_id,
+            'mapId': map_id, 'start': start, 'startHeading': start_heading,
+            'goal': goal.model_dump(exclude_none=True) if goal else None, 'windowId': window_id,
+            'throughFrame': through_frame}
+    return request('/api/ardy/world/'+operation, {k: v for k, v in args.items() if v is not None})
 
 
 @mcp.tool()

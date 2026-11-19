@@ -121,12 +121,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        if parsed.path in ("/api/stereo/state", '/api/stereo/frame', '/api/targets/frame'):
+        if parsed.path in ("/api/stereo/state", '/api/stereo/frame', '/api/targets/frame', '/api/stereo/planning-map'):
             client_id = parse_qs(parsed.query).get('clientId', [None])[0]
             try:
                 if not isinstance(client_id, str):
                     raise ValueError('需要 clientId')
-                if parsed.path == '/api/targets/frame':
+                if parsed.path == '/api/stereo/planning-map':
+                    result = STEREO.planning_map(client_id)
+                elif parsed.path == '/api/targets/frame':
                     result = VISUAL_TARGETS.frame(client_id)
                 else:
                     result = STEREO.body_frame(client_id) if parsed.path.endswith('/frame') else STEREO.snapshot(client_id)

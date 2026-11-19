@@ -46,6 +46,7 @@ sys.path.insert(0, str(LAB_ROOT / "server"))
 import control  # noqa: E402
 import runtime  # noqa: E402
 from dual import DualRunner  # noqa: E402
+from ardy_playback import WorldPlayback  # noqa: E402
 
 from settings import PROJECT as ROOT, MOTION_TOOLS, SERVICE_DIR, EMBEDDINGS
 VENV_PY = Path(sys.executable)
@@ -56,6 +57,7 @@ MANIFEST = SERVICE_DIR / "manifest.json"
 GENERATION_LOCK = threading.Lock()
 REALTIME_RUNNER_LOCK = threading.Lock()
 REALTIME_RUNNER = None
+WORLD_PLAYBACK = WorldPlayback()
 STREAM_REQUESTS: dict[str, tuple[int, threading.Event]] = {}
 STREAM_REQUESTS_LOCK = threading.Lock()
 
@@ -88,16 +90,26 @@ def release_stream(args: dict, event: threading.Event) -> None:
             del STREAM_REQUESTS[client]
 
 
-def run_stream_generation(args: dict, prompt_text: str, duration: float, emit) -> dict:
+def get_realtime_runner() -> DualRunner:
     global REALTIME_RUNNER
+    with REALTIME_RUNNER_LOCK:
+        if REALTIME_RUNNER is None:
+            REALTIME_RUNNER = DualRunner(RealtimeRunner)
+        return REALTIME_RUNNER
+
+
+def generate_world_window(plan, start, history, world, cancelled):
+    if cancelled():
+        raise GenerationCancelled()
+    return get_realtime_runner().world_window(plan, start, history, world, cancelled)
+
+
+def run_stream_generation(args: dict, prompt_text: str, duration: float, emit) -> dict:
     cancelled = register_stream(args)
     try:
         if cancelled.is_set():
             raise GenerationCancelled()
-        with REALTIME_RUNNER_LOCK:
-            if REALTIME_RUNNER is None:
-                REALTIME_RUNNER = DualRunner(RealtimeRunner)
-            runner = REALTIME_RUNNER
+        runner = get_realtime_runner()
         scene_plan = runtime.find_plan(args["planId"]) if args.get("planId") else None
         motion = runner.generate(prompt_text, duration, emit, args.get("history"), cancelled.is_set, scene_plan)
         if cancelled.is_set():
@@ -606,6 +618,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         try:
             body = self._read()
+            if self.path.startswith('/api/ardy/world/'):
+                operation = self.path.removeprefix('/api/ardy/world/')
+                return self._send(200, WORLD_PLAYBACK.dispatch(operation, body, generate_world_window))
             result = control.post(self.path, body)
             if result is not None:
                 return self._send(200, result)

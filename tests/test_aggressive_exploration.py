@@ -97,6 +97,27 @@ class AggressiveExplorationTests(unittest.TestCase):
         self.assertAlmostEqual(result['routeLength'], 2)
         self.assertTrue(result['continuous'])
 
+    def test_confirmed_route_takes_precedence_over_a_speculative_door(self):
+        self.memory.position, self.memory.rotation = np.zeros(3), np.eye(3)
+        frame = observation(100.)
+        frame['objects'] = [{'label': 'door', 'box': [50, 0, 190, 350], 'confidence': .8}]
+        route = {'available': True, 'goal': [0, 6], 'bearing': 0., 'distance': 2.,
+                 'intent': 'explore_frontier', 'relativePath': [[0., 2.]]}
+        result = self.step(frame=frame, route=route)
+        self.assertEqual(result['intent'], 'explore_frontier')
+        self.assertEqual(result['relativePath'], route['relativePath'])
+
+    def test_fallback_probe_does_not_follow_its_previous_heading_back_along_the_trail(self):
+        self.memory.position, self.memory.rotation = np.zeros(3), np.eye(3)
+        for i in range(7):
+            self.memory.exit_memory.observe(np.array([0., 0., 3.-i*.5]), 90.+i)
+        frame = observation(100.)
+        frame['stereo']['mapping'] = True
+        self.navigator.drive.commit_heading, self.navigator.drive.commit_until = 0., 110.
+        result = self.step(frame=frame)
+        self.assertEqual(result['action'], 'forward')
+        self.assertGreaterEqual(abs(result['relativeBearing']), 60.)
+
     def test_head_body_difference_does_not_rotate_unknown_forward_motion(self):
         frame = {**observation(100), 'viewHeading': 55, 'bodyHeading': 20}
         self.nav['bodyBearing'] = 35

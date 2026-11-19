@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 
-def route_to_target(memory, target, intent):
+def route_to_target(memory, target, intent, *, explore_at=None):
     if memory.position is None or memory.rotation is None or not memory.cells:
         return None
     target = np.asarray(target, dtype=float)
@@ -13,7 +13,7 @@ def route_to_target(memory, target, intent):
     direct = float(np.linalg.norm((target-memory.position)[[0, 2]]))
     if direct < .45:
         return None
-    paths = memory.reachable()
+    paths = memory.reachable(explore_at=explore_at)
     key = memory.key(target)
     if key not in paths:
         key = route_prefix(memory, target, paths, direct)

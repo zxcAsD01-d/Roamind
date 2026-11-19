@@ -72,7 +72,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 await session.initialize()
                 tools = {tool.name for tool in (await session.list_tools()).tools}
                 self.assertTrue({'get_agent_context', 'submit_agent_intent', 'get_character_goal',
-                    'select_contact_target', 'follow_target', 'touch_view_text'} <= tools)
+                    'select_contact_target', 'follow_target', 'touch_view_text', 'ardy_world_playback'} <= tools)
+                no_session = await session.call_tool('ardy_world_playback', {'operation': 'state', 'session_id': 'missing'})
+                self.assertTrue(no_session.isError)
                 failed = await session.call_tool('get_agent_context', {'client_id': 'missing'})
                 self.assertTrue(failed.isError)
                 self.post('/api/sim/sync', {'clientId': 'mcp-contract', 'state': {}})

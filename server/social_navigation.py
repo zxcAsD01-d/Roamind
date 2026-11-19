@@ -240,14 +240,9 @@ class SocialNavigator:
         committed = self.drive.committed(observation, memory, now)
         if committed is not None:
             return self.routed_exploration(committed, navigation, memory, now)
-        exits = self.drive.exit_candidates(observation, memory)
-        if not exits and self.travel_ready(navigation, guidance):
-            heading = self.drive.view-guidance.get('bearing', 0)
-            path = guidance.get('relativePath')
-            bearing, distance = path[-1] if path else (guidance.get('bearing', 0), guidance.get('distance', 3.))
-            target = self.drive.world_target(bearing, distance, memory)
-            retrace = memory.exit_memory.travel_penalty(memory.position, target, now) if target is not None else 0.
-            if retrace < 4 and not self.drive.blocked(heading, memory, now):
+        if self.travel_ready(navigation, guidance):
+            heading = self.drive.view-guidance['bearing']
+            if not self.drive.blocked(heading, memory, now):
                 result = self.follow_guidance(navigation, memory, guidance, now)
                 if result is not None:
                     self.drive.requested_heading = heading
@@ -260,7 +255,7 @@ class SocialNavigator:
             target = self.drive.commit_target
             if target is None:
                 target = self.drive.world_target(command['bearing'], command['distance'], memory)
-            route = route_to_target(memory, target, command['intent']) if target is not None else None
+            route = route_to_target(memory, target, command['intent'], explore_at=now) if target is not None else None
             if route is not None:
                 result = self.follow_guidance(navigation, memory, route, now)
                 if result is not None and result.get('action') == 'forward':

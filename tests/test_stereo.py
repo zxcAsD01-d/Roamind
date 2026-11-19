@@ -10,7 +10,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 from semantic_map import SemanticMap
-from stereo_depth import Calibration, DepthFrame, StereoDepth, clearance_sectors, ground_estimate, _horizontal_view, epipolar_texture
+from stereo_depth import (Calibration, DepthFrame, StereoDepth, clearance_sectors, coherent_matches,
+                          epipolar_texture, ground_estimate, _horizontal_view)
 from visual_navigation import depth_navigation
 from visual_odometry import VisualOdometry
 from stereo_service import StereoSession, StereoSessions
@@ -38,6 +39,22 @@ class StereoDepthTests(unittest.TestCase):
         self.assertFalse(epipolar_texture(stripes).any())
         stripes[:, 155:165] = 240
         self.assertGreater(np.sum(epipolar_texture(stripes)), 500)
+
+    def test_local_disparity_rejects_speckles_without_smearing_thin_edges(self):
+        disparity = np.full((24, 24), 8., dtype=np.float32)
+        disparity[3:20, 10] = 16.
+        disparity[12, 17:19] = 15.
+        disparity[5, 18] = 19.
+        disparity[1, [0, -1]] = 20.
+        disparity[2, -1] = 20.
+        supported = np.ones(disparity.shape, dtype=bool)
+        supported[6, 17] = False
+        keep = coherent_matches(disparity, supported)
+        self.assertTrue(keep[4:19, 10].all())
+        self.assertTrue(keep[4:19, 9].all() and keep[4:19, 11].all())
+        self.assertFalse(keep[12, 17:19].any())
+        self.assertFalse(keep[5, 18] or keep[6, 17] or keep[1, 0])
+        self.assertTrue((disparity[4:19, 10] == 16.).all())
 
     def test_visual_floor_memory_rejects_dominant_tabletop_and_never_fills_missing_floor(self):
         tracker = FloorTracker()
@@ -209,12 +226,80 @@ class StereoDepthTests(unittest.TestCase):
 
 
 class SemanticMapTests(unittest.TestCase):
+    def test_ardy_planning_map_excludes_inferred_voxels_and_requires_tracking(self):
+        session = StereoSession()
+        stamp = time.time()
+        with self.assertRaisesRegex(ValueError, '双目定位'):
+            session.planning_map()
+        session.latest = {'mapping': True, 'observedAt': stamp}
+        session.floor.normal, session.floor.offset = np.array([0., 1., 0.]), 0.
+        session.world._merge(np.array([[0., 0., 1.], [.1, .2, 1.]]), np.zeros((2, 3)),
+                             np.array([True, False]), stamp)
+        planning = session.planning_map()
+        self.assertEqual(planning['mapId'], session.world.map_id)
+        self.assertEqual(planning['measuredPoints'], [[0., 0., 1.]])
+        session.latest['observedAt'] -= 3
+        with self.assertRaisesRegex(ValueError, '双目定位'):
+            session.planning_map()
+
     def frame(self):
         calibration = Calibration(320, 180, 240., 240., 160., 90., .12)
         depth = np.full((180, 320), 5., np.float32)
         depth[60:120, 110:170] = 2.
         rgb = np.full((180, 320, 3), 120, np.uint8)
         return DepthFrame(rgb, rgb[:, :, 0], depth, depth > 0, np.zeros_like(depth, np.uint8), calibration)
+
+    def test_single_frame_ghost_is_removed_by_distinct_tracked_views(self):
+        world = SemanticMap()
+        first, background = self.frame(), self.frame()
+        background.depth.fill(5.)
+        world.integrate(first, np.eye(4), 100.)
+        ghost = (0, 0, 25)
+        self.assertIn(ghost, world.voxels)
+        pose = np.eye(4)
+        pose[0, 3] = .2
+        world.integrate(background, pose, 101.)
+        world.integrate(background, pose, 101.)
+        self.assertIn(ghost, world.voxels)
+        world.integrate(background, pose, 102.)
+        self.assertNotIn(ghost, world.voxels)
+        measured = world.planning_points(102.)['measuredPoints']
+        self.assertTrue(measured)
+        self.assertTrue(all(point[2] > 2. for point in measured))
+
+    def test_occluded_or_inferred_depth_does_not_clear_weak_voxel(self):
+        world, pose, frame = SemanticMap(), np.eye(4), self.frame()
+        point = np.array([[.015, .015, 3.05]])
+        key, = world._merge(point, np.full((1, 3), 120.), np.ones(1, bool), 100.)
+        world.integrate(frame, pose, 101.)  # Measured foreground occludes the voxel.
+        frame.depth.fill(5.)
+        world.integrate(frame, pose, 102.)  # First contradiction is not enough.
+        frame.reconstruction_depth = frame.depth.copy()
+        frame.surface_valid = frame.valid.copy()
+        frame.surface_valid[91, 161] = False  # Center of the voxel projection is not measured.
+        world.integrate(frame, pose, 103.)
+        frame.surface_valid[91, 161] = True
+        world.integrate(frame, pose, 104.)  # Occlusion/unknown reset the streak.
+        self.assertIn(key, world.voxels)
+        world.integrate(frame, pose, 105.)
+        self.assertNotIn(key, world.voxels)
+
+    def test_late_annotation_cannot_restore_a_cleared_noise_voxel(self):
+        world, pose, frame = SemanticMap(), np.eye(4), self.frame()
+        frame.depth.fill(5.)
+        points = np.array([[.015, .015, 2.05], [.135, .015, 2.05]])
+        colors, measured = np.full((2, 3), 120.), np.ones(2, bool)
+        confirmed, weak = world._merge(points, colors, measured, 100.)
+        world._merge(points[:1], colors[:1], measured[:1], 101.)
+        world.integrate(frame, pose, 102.)
+        world.integrate(frame, pose, 103.)
+        self.assertIn(confirmed, world.voxels)
+        self.assertNotIn(weak, world.voxels)
+        world.labels.append('chair')
+        self.assertEqual(world._merge(points, colors, measured, 100., label=1), [confirmed])
+        self.assertNotIn(weak, world.voxels)
+        self.assertEqual(world._merge(points, colors, measured, 104.), [confirmed, weak])
+        self.assertIn(weak, world.voxels)
 
     def test_surface_annotation_excludes_majority_background(self):
         frame, world, pose = self.frame(), SemanticMap(), np.eye(4)

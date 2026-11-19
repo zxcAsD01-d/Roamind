@@ -134,13 +134,22 @@ class StereoSession:
             age = max(0., time.time()-latest['observedAt'])
             return {'ready': True, 'stale': age > 2., 'ageSeconds': round(age, 3),
                     'frameId': latest['frameId'], 'observedAt': latest['observedAt'],
-                    'pose': self.odometry.snapshot(), 'trajectory': self.odometry.trajectory,
+                    'pose': latest['pose'], 'trajectory': self.odometry.trajectory,
                     'map': self.world.snapshot(), 'sectors': latest['sectors'],
                     'groundPlane': latest['groundPlane'], 'mapping': latest['mapping'],
                     'groundInfo': latest.get('groundInfo'),
                     'exitEvidence': latest.get('exitEvidence'),
                     'bodyObservation': self.body_targets.snapshot(),
                     'source': 'rgb-stereo-only'}
+
+    def planning_map(self):
+        with self.lock:
+            now = time.time()
+            if (not self.latest or not self.latest['mapping'] or now-self.latest['observedAt'] > 2
+                    or self.floor.normal is None):
+                raise ValueError('需要新鲜的双目定位与实测地面，才能规划世界关键帧')
+            return {**self.world.planning_points(now), 'floorNormal': self.floor.normal.tolist(),
+                    'floorOffset': float(self.floor.offset)}
 
     def pose_points(self, body, people):
         from pose_depth import fuse_people
@@ -215,6 +224,13 @@ class StereoSessions:
         if session is None:
             raise ValueError('未找到该双目会话；请先在网页开启双目视觉')
         return session.snapshot()
+
+    def planning_map(self, client_id):
+        with self.lock:
+            session = self.sessions.get(client_id)
+        if session is None:
+            raise ValueError('未找到融合点云会话；请先开启双目视觉')
+        return session.planning_map()
 
     def touch_target(self, body):
         with self.lock:

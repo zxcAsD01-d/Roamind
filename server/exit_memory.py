@@ -4,6 +4,8 @@ import math
 
 import numpy as np
 
+RECENT_TRAVEL_SECONDS = 90.
+
 
 def observe_crossing(item, position, stamp):
     """Advance a stable portal plane; return whether a measured crossing completed."""
@@ -123,18 +125,25 @@ class ExitMemory:
                 penalty = max(penalty, strength*item['confidence'])
         return penalty
 
+    def recent_trail(self, now, min_age=0.):
+        return [(point, stamp) for point, stamp in self.trail if min_age <= now-stamp < RECENT_TRAVEL_SECONDS]
+
     def travel_penalty(self, start, target, now):
-        penalty = self.return_penalty(start, target, now)
+        return self.return_penalty(start, target, now)+self.retrace_penalty(start, target, now)
+
+    def retrace_penalty(self, start, target, now):
         if start is None or len(self.trail) < 3:
-            return penalty
+            return 0.
+        penalty = 0.
         origin, destination = np.asarray(start)[[0, 2]], np.asarray(target)[[0, 2]]
-        recent = np.asarray([point[[0, 2]] for point, stamp in self.trail if 2 < now-stamp < 90])
+        trail = self.recent_trail(now, min_age=2.)
+        recent = np.asarray([point[[0, 2]] for point, _ in trail])
         if len(recent):
             samples = origin+(destination-origin)*np.linspace(.25, 1., 6)[:, None]
             distance = np.linalg.norm(samples[:, None, :]-recent[None, :, :], axis=2).min(axis=1)
             penalty += 7*float(np.maximum(0., 1-distance/.8).mean())
-            prior = next((point[[0, 2]] for point, stamp in reversed(self.trail)
-                          if 2 < now-stamp < 90 and np.linalg.norm(point[[0, 2]]-origin) > .8), None)
+            prior = next((point[[0, 2]] for point, _ in reversed(trail)
+                          if np.linalg.norm(point[[0, 2]]-origin) > .8), None)
             if prior is not None:
                 vector = destination-origin
                 length = np.linalg.norm(vector)*np.linalg.norm(prior-origin)

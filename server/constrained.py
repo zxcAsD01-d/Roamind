@@ -11,7 +11,23 @@ from motion_quality import decode_window, overlap_condition
 PARENTS = [-1,0,1,2,3,4,5,4,7,8,9,10,10,4,13,14,15,16,16,0,19,20,21,0,23,24,25]
 
 
-def prepare_conditions(runner, track, heading, history_count, corrections, shift, height_mask=None, hand_targets=None, hand_joint=10):
+def static_pose_condition(runner, poses, track, offset, shift):
+    from ardy.constraints import FullBodyConstraintSet
+    from touch_ik import forward
+
+    skeleton = runner.model.motion_rep.skeleton
+    rest = skeleton.neutral_joints.cpu().numpy()
+    frames = sorted(poses)
+    joints, rotations = zip(*(forward(np.asarray(poses[frame]), track[frame]+shift, rest, PARENTS)
+                              for frame in frames))
+    torch = runner.torch
+    return FullBodyConstraintSet(skeleton, torch.tensor(frames)+offset,
+        torch.tensor(np.asarray(joints), dtype=torch.float32, device=runner.device),
+        torch.tensor(np.asarray(rotations), dtype=torch.float32, device=runner.device))
+
+
+def prepare_conditions(runner, track, heading, history_count, corrections, shift, height_mask=None,
+                       hand_targets=None, hand_joint=10, static_poses=None):
     from ardy.constraints import Root2DConstraintSet
     torch = runner.torch
     frames = torch.arange(history_count, history_count+runner.horizon)
@@ -22,6 +38,8 @@ def prepare_conditions(runner, track, heading, history_count, corrections, shift
     if height_mask is not None and np.any(height_mask):
         selected = torch.as_tensor(height_mask, dtype=torch.bool)
         constraints.append(RootHeightCondition(frames[selected], positions[selected.to(runner.device)]))
+    if static_poses:
+        constraints.append(static_pose_condition(runner, static_poses, track, history_count, shift))
     if corrections:
         constraints.append(JointClearanceCondition(torch, corrections, history_count, shift, runner.device))
     if hand_targets is not None:
@@ -35,7 +53,8 @@ def prepare_conditions(runner, track, heading, history_count, corrections, shift
 
 
 def conditioned_window(runner, history, prompt, track, heading, cancelled, previous, inference_lock,
-                       pending=None, return_window=False, height_mask=None, hand_targets=None, hand_joint=10):
+                       pending=None, return_window=False, height_mask=None, hand_targets=None, hand_joint=10,
+                       static_poses=None, fused_world=False):
     from realtime import GenerationCancelled
     origin, previous_local, previous_root = previous
     shift = origin - np.array([0, .92, 0], dtype=np.float32)
@@ -49,7 +68,8 @@ def conditioned_window(runner, history, prompt, track, heading, cancelled, previ
         with inference_lock:
             if cancelled():
                 raise GenerationCancelled()
-            observed, motion_mask = prepare_conditions(runner, track, heading, count, corrections, shift, height_mask, hand_targets, hand_joint)
+            observed, motion_mask = prepare_conditions(
+                runner, track, heading, count, corrections, shift, height_mask, hand_targets, hand_joint, static_poses)
             overlap, overlap_mask = overlap_condition(runner, pending, count)
             if overlap is not None:
                 # Safety refinement may release a colliding retained keyframe;
@@ -80,6 +100,10 @@ def conditioned_window(runner, history, prompt, track, heading, cancelled, previ
         if previous_local is not None:
             runner._blend_boundary(local, root, previous_local, previous_root)
             root[:, [0, 2]] = (track+shift)[:, [0, 2]]
+        if fused_world:
+            # The coordinator has the fused map and validates the final, blended output.
+            window.stats = {'rootProjectionMax': round(largest_root_error, 4)}
+            return window
         encoded = runner._encode_history(local, root)
         decoded = runner.model.motion_rep.inverse(encoded, is_normalized=True)
         joints = decoded["posed_joints"][0].detach().cpu().numpy() - shift

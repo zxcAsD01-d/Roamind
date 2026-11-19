@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'server'))
-from exploration_memory import ExplorationMemory
+from exploration_memory import ExplorationMemory, Reachability
 from floor_topology import FloorTopology, neighbors
 from semantic_map import SemanticMap
 from social_navigation import SocialNavigator, attach_route, person_observation
@@ -129,7 +129,7 @@ class FloorSocialTests(unittest.TestCase):
         memory = ExplorationMemory()
         memory.position, memory.rotation = np.array([.175, 0, .175]), np.eye(3)
         memory.cells = {(x, z): (-2., 100, 1) for x in range(-3, 4) for z in range(-3, 7)}
-        memory.choose_goal(SimpleNamespace(lengths={(0, 5): 6}), 100)
+        memory.choose_goal(Reachability({}, {(0, 5): 6}, {}), 100)
         exit = next(iter(memory.coverage.exits.values()))
         self.assertEqual(exit['direction'], 0, '未知地板在北向，不能默认记录为东向出口')
 

@@ -85,6 +85,40 @@ def epipolar_texture(gray):
     return cv2.boxFilter(gradient*gradient, -1, (7, 7)) > 1.
 
 
+def coherent_matches(disparity, supported):
+    """Require local disparity support without averaging across depth edges."""
+    height, width = disparity.shape
+    padded = np.pad(disparity, 1)
+    valid = np.pad(supported, 1)
+    tolerance = np.clip(.03*disparity, .85, 1.5)
+    neighbors = np.zeros(disparity.shape, dtype=np.uint8)
+    for y, x in ((0, 0), (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1), (2, 2)):
+        area = np.s_[y:y+height, x:x+width]
+        neighbors += valid[area] & (np.abs(padded[area]-disparity) <= tolerance)
+    # A one-pixel-wide feature can still have two consistent neighbors along it.
+    return supported & (neighbors >= 2)
+
+
+def free_space_conflicts(frame, optical, voxel_size):
+    """Only dense, directly measured depth behind a projected voxel disproves it."""
+    c = frame.calibration
+    result = np.zeros(len(optical), dtype=bool)
+    front = np.flatnonzero((optical[:, 2] >= .25) & (optical[:, 2] <= 10.))
+    x, y, z = optical[front].T
+    u, v = np.rint(c.fx*x/z+c.cx), np.rint(c.fy*y/z+c.cy)
+    inside = (u >= 2) & (u < c.width-2) & (v >= 2) & (v < c.height-2)
+    if not inside.any():
+        return result
+    measured = frame.valid if frame.surface_valid is None else frame.surface_valid
+    depth = np.where(measured, frame.depth, 0)
+    nearest = cv2.erode(depth, np.ones((5, 5), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    z = z[inside]
+    # Reserve room for the voxel extent and pixel-disparity uncertainty.
+    margin = 1.5*voxel_size+z*z/(c.fx*c.baseline)
+    result[front[inside]] = nearest[v[inside].astype(int), u[inside].astype(int)] > z+margin
+    return result
+
+
 class StereoDepth:
     def __init__(self):
         self.matchers = {}
@@ -123,7 +157,7 @@ class StereoDepth:
         edges[(jumps > .2) & valid & np.roll(valid, 1, axis=1)] = 255
         # Optical flow can retain an existing RANSAC-verified landmark through
         # weak texture. New floor/obstacle surfaces need epipolar support too.
-        surface_valid = valid & epipolar_texture(gray)
+        surface_valid = coherent_matches(forward, valid & epipolar_texture(gray))
         frame = DepthFrame(left, gray, depth, valid, edges, calibration, surface_valid)
         from surface_completion import complete_surfaces
         complete_surfaces(frame, right)

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 import numpy as np
 
+from ardy_keyframes import prompt_boundary
 from overlap import MotionWindow, fuse_windows
 from motion_quality import decode_window, match_boundary, overlap_condition, restore_contacts
 
@@ -95,17 +96,20 @@ class DualRunner:
     @staticmethod
     def _plan_window(runner, history, start, origin, plan, cancelled, pending=None):
         from constrained import conditioned_window, next_boundary
-        end = min(next_boundary(plan, start), plan['frames'])
+        fused = plan.get('world') == 'fused-pointcloud'
+        end = prompt_boundary(plan, start) if fused else min(next_boundary(plan, start), plan['frames'])
         indices = np.clip(np.arange(start, start+runner.horizon), 0, end-1)
         track = np.asarray(plan["rootTrack"], dtype=np.float32)[indices]
         heading = np.asarray(plan["headingTrack"], dtype=np.float32)[indices]
-        prompt = plan["promptTrack"][min(start, plan["frames"]-1)]
+        prompt = plan["promptTrack"][start]
+        static = plan.get('staticPoses', {})
         return conditioned_window(runner, history, prompt, track, heading,
             cancelled, (origin, None, None), threading.Lock(), pending=pending,
             return_window=True, height_mask=np.asarray(plan.get('heightTrack',
                 [False]*plan['frames']), dtype=bool)[indices],
             hand_targets=np.asarray(plan['handTrack'], dtype=np.float32)[indices] if 'handTrack' in plan else None,
-            hand_joint=plan.get('handJoint', 10))
+            hand_joint=plan.get('handJoint', 10), fused_world=fused,
+            static_poses={i: static[frame] for i, frame in enumerate(indices) if frame in static and start+i < end})
 
     def _wait_window(self, task, cancelled):
         from realtime import GenerationCancelled
@@ -154,6 +158,23 @@ class DualRunner:
             head = fuse_windows(pending, head)
         retained = None if frame+count == boundary else window.slice(count)
         return head.slice(0, count), retained
+
+    def world_window(self, plan, start, history, world, cancelled):
+        """Generate one provisional window, using only acknowledged playback as history."""
+        from ardy_world_motion import finish_window
+        runner = self.primary
+        with self.session(cancelled), runner.torch.inference_mode():
+            _, origin, poses, deltas = runner._read_history(history)
+            origin = np.asarray([0, .92, 0], dtype=np.float32) if origin is None else origin
+            local = poses[0] if poses else np.empty((0, 81), dtype=np.float32)
+            root = deltas[0]+origin if deltas else np.empty((0, 3), dtype=np.float32)
+            prompt = plan['promptTrack'][start]
+            count = min(self.overlap, prompt_boundary(plan, start)-start)
+            began = time.perf_counter()
+            window = self._next_window(local, root, prompt, start, origin, plan, cancelled)
+            output = finish_window(runner, window, local, root, plan, start, count, origin, world)
+            event = self._event(f"{plan['id']}_{start}", prompt, 0, start, output, origin, plan, began)
+            return {**event, 'version': 1, 'duration': count/runner.fps, 'dataset': 'ARDY · 融合点云'}
 
     def generate(self, prompt, duration, emit, initial_history=None, cancelled=lambda: False, plan=None):
         with self.session(cancelled), self.primary.torch.inference_mode():

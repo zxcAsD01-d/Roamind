@@ -67,6 +67,52 @@ class SearchCoverageTests(unittest.TestCase):
         route = memory.route_to((0, 10), 'explore_frontier')
         self.assertIsNone(route)
 
+    def test_exploration_prefers_the_untraveled_side_of_a_two_route_loop(self):
+        memory = ExplorationMemory()
+        memory.position, memory.rotation = np.array([.175, 0., .175]), np.eye(3)
+        memory.cells = {(x, z): (-2., 100., 3) for x in range(-8, 9) for z in range(-4, 19)}
+        for z in range(4, 10):
+            memory.cells[0, z] = (2., 100., 3)
+        goal = (0, 14)
+        ordinary = memory.reachable()
+        old_path = ordinary.path(goal)
+        self.assertGreater(next(x for x, z in old_path if z == 6), 0)
+        for stamp, key in enumerate(reversed(old_path), 100):
+            x, z = memory.cell_point(key)
+            memory.exit_memory.observe(np.array([x, 0., z]), stamp)
+        explore = memory.reachable(explore_at=124.)
+        self.assertLess(next(x for x, z in explore.path(goal) if z == 6), 0)
+        self.assertGreater(memory.route_to(goal, 'explore_frontier', explore)['bearing'], 0.)
+        self.assertIs(memory.reachable(explore_at=125.), explore)
+        self.assertIs(memory.reachable(), ordinary)  # User-directed paths are not penalized.
+        self.assertIs(memory.reachable(explore_at=220.), ordinary)  # Expiry invalidates exploration cache.
+
+    def test_visited_corridor_remains_usable_when_there_is_no_alternative(self):
+        memory = ExplorationMemory()
+        memory.position, memory.rotation = np.array([.175, 0., .175]), np.eye(3)
+        memory.cells = {(x, z): (-2., 100., 3) for x in range(-1, 2) for z in range(-2, 12)}
+        goal = (0, 10)
+        for z in range(8):
+            memory.exit_memory.observe(np.array([.175, 0., .175+z*.35]), 100.+z)
+        paths = memory.reachable(explore_at=109.)
+        self.assertEqual(paths.path(goal), [(0, z) for z in range(11)])
+        self.assertTrue(memory.route_to(goal, 'explore_frontier', paths)['available'])
+
+    def test_arrival_cooldown_begins_only_after_localization_reaches_the_goal(self):
+        memory = ExplorationMemory()
+        memory.position, memory.rotation = np.array([.175, 0., .175]), np.eye(3)
+        memory.cells = {(x, z): (-2., 100., 3) for x in range(-4, 5) for z in range(-4, 8)}
+        selected = tuple(memory.guidance(100.)['goal'])
+        self.assertEqual(tuple(memory.guidance(101.)['goal']), selected)
+        self.assertFalse(memory.goal_on_cooldown(selected, 101.))
+        x, z = memory.cell_point(selected)
+        identity = np.eye(4).ravel().tolist()
+        memory.update({'mapping': True, 'observedAt': 102., 'pose': {
+            'cameraToWorld': identity, 'bodyPosition': [x, 0., z]}}, [], 102.)
+        self.assertTrue(memory.goal_on_cooldown((selected[0]+1, selected[1]), 103.))
+        self.assertFalse(memory.goal_on_cooldown(selected, 192.))
+        self.assertIsNone(memory.goal)
+
     def test_direction_and_exit_memory_are_bounded(self):
         for index in range(2200):
             position = np.array([index*2., 0, 0])

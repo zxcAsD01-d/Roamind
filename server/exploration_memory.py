@@ -18,6 +18,7 @@ class Reachability:
     parents: dict
     lengths: dict
     penalties: dict
+    costs: dict | None = None
 
     def __contains__(self, key):
         return key in self.parents
@@ -53,12 +54,15 @@ class ExplorationMemory:
         self.goal = None
         self.goal_intent = 'explore_frontier'
         self.goal_since = 0.
+        self.arrived = {}
         self.rejected = {}
         self.rejected_motions = []
         self.last_visit = None
         self.map_revision = 0
         self.reach_cache = None
         self.reach_signature = None
+        self.explore_cache = None
+        self.explore_signature = None
         self.planner_runs = 0
         self.planner_hits = 0
         self.planner_ms = 0.
@@ -120,6 +124,7 @@ class ExplorationMemory:
             self.integrate_grid(grid, stamp)
         self.exit_memory.integrate(stereo.get('exitEvidence'), now)
         self.exit_memory.observe(self.position, stamp)
+        self.confirm_arrival(stamp)
         self.remember_people(people, now)
         self.cleanup(now)
         self.topology.update(self.cells, self.map_revision, now, self.exit_memory.portals)
@@ -225,24 +230,51 @@ class ExplorationMemory:
         x, z = key
         return [(x+1, z), (x-1, z), (x, z+1), (x, z-1)]
 
-    def reachable(self):
+    def reachable(self, *, explore_at=None):
         start = self.key(self.position)
         axes = self.horizontal_axes()
         forward = axes[0] if axes is not None else np.zeros(3)
         directions = tuple(sorted(self.neighbors((0, 0)),
                                   key=lambda step: -(step[0]*forward[0]+step[1]*forward[2])))
         signature = (self.map_revision, start, directions)
-        if self.reach_cache is not None and self.reach_signature == signature:
+        trail = [] if explore_at is None else self.exit_memory.recent_trail(explore_at)
+        if trail:
+            signature += (trail[0][1], trail[-1][1])
+            cached = self.explore_cache if signature == self.explore_signature else None
+        else:
+            cached = self.reach_cache if signature == self.reach_signature else None
+        if cached is not None:
             self.planner_hits += 1
-            return self.reach_cache
+            return cached
         started = time.perf_counter()
-        penalties = self.clearance_penalties()
+        clearance = self.clearance_penalties()
+        penalties = self.exploration_penalties(clearance, trail) if trail else clearance
+        paths = self.search_routes(start, directions, clearance, penalties)
+        if trail:
+            self.explore_signature, self.explore_cache = signature, paths
+        else:
+            self.reach_signature, self.reach_cache = signature, paths
+        self.planner_runs += 1
+        self.planner_ms = (time.perf_counter()-started)*1000
+        self.planner_total_ms += self.planner_ms
+        return paths
+
+    def exploration_penalties(self, clearance, trail):
+        if not clearance:
+            return clearance
+        points = [point[[0, 2]] for point, _ in trail]
+        cells = np.asarray(list(clearance))
+        distance = cKDTree(points).query((cells+.5)*self.resolution)[0]
+        cost = 2.5*np.maximum(0., 1-distance/.7)
+        return {key: base+extra for (key, base), extra in zip(clearance.items(), cost.tolist())}
+
+    def search_routes(self, start, directions, clearance, penalties):
         unsafe = {(key[0]+dx, key[1]+dz) for key, cell in self.cells.items() if cell[0] > .4
                   for dx in range(-1, 2) for dz in range(-1, 2)}
         unsafe.update(key for key, cell in self.cells.items() if cell[0] < -.15 and not self.floor_supported(key))
         queue, parents, lengths, costs = [(0., 0, start)], {start: None}, {start: 1}, {start: 0.}
         sequence = 0
-        while queue and len(parents) < 6000:
+        while queue:
             cost, _, key = heapq.heappop(queue)
             if cost > costs[key]:
                 continue
@@ -251,7 +283,7 @@ class ExplorationMemory:
                 cell = self.cells.get(neighbor)
                 if cell is None or cell[0] >= -.15:
                     continue
-                if neighbor in unsafe and (key not in unsafe or penalties.get(neighbor, 1.) >= penalties.get(key, 1.)):
+                if neighbor in unsafe and (key not in unsafe or clearance.get(neighbor, 1.) >= clearance.get(key, 1.)):
                     continue
                 if self.rejected_motions and self.motion_blocked(self.cell_point(key), self.cell_point(neighbor)):
                     continue
@@ -264,11 +296,7 @@ class ExplorationMemory:
                 parents[neighbor], lengths[neighbor] = key, lengths[key]+1
                 sequence += 1
                 heapq.heappush(queue, (candidate, sequence, neighbor))
-        self.reach_signature, self.reach_cache = signature, Reachability(parents, lengths, penalties)
-        self.planner_runs += 1
-        self.planner_ms = (time.perf_counter()-started)*1000
-        self.planner_total_ms += self.planner_ms
-        return self.reach_cache
+        return Reachability(parents, lengths, penalties, costs)
 
     def near_obstacle(self, key):
         return any(self.cells.get((key[0]+dx, key[1]+dz), (0,))[0] > .4
@@ -347,14 +375,31 @@ class ExplorationMemory:
                 pressure += min(3, visits)*max(0., 1-distance/.9)
         return nearest, pressure
 
+    def confirm_arrival(self, stamp):
+        if self.goal is None or self.distance_to(self.goal) > .3:
+            return
+        self.arrived[self.goal] = stamp+90.
+        if len(self.arrived) > 64:
+            del self.arrived[min(self.arrived, key=self.arrived.get)]
+        self.goal = None
+
+    def goal_on_cooldown(self, key, now):
+        # A neighboring cell in the same arrival pocket is not a new target.
+        return any(self.arrived.get((key[0]+dx, key[1]+dz), 0.) > now
+                   for dx in range(-1, 2) for dz in range(-1, 2))
+
+    def unknown_directions(self, key):
+        return [index for index, (dx, dz) in enumerate(self.neighbors((0, 0)))
+                if (key[0]+dx, key[1]+dz) not in self.cells or (
+                    self.cells[key[0]+dx, key[1]+dz][0] < -.15 and (key[0]+2*dx, key[1]+2*dz) not in self.cells)]
+
     def choose_goal(self, paths, now):
         candidates = []
         visited = cKDTree(list(self.visits)) if self.visits else None
         for key, length in paths.lengths.items():
-            if length < 3 or self.rejected.get(key, 0) > now:
+            if length < 3 or self.rejected.get(key, 0) > now or self.goal_on_cooldown(key, now):
                 continue
-            frontier_directions = [index for index, (dx, dz) in enumerate(self.neighbors((0, 0)))
-                                   if any((key[0]+dx*step, key[1]+dz*step) not in self.cells for step in (1, 2))]
+            frontier_directions = self.unknown_directions(key)
             frontier = len(frontier_directions)
             point = np.array([(key[0]+.5)*self.resolution, 0, (key[1]+.5)*self.resolution])
             social = max((p['confidence']*math.exp(-(now-p['seen'])/90)/
@@ -369,13 +414,14 @@ class ExplorationMemory:
                 exit_penalty = 2. if exit['status'] == 'attempted' and now < exit.get('retryAfter', 0) else 0.
             novelty, visits = self.frontier_novelty(key, visited)
             bearing = abs(self.bearing_to(point-self.position))
-            score = 2*min(1, frontier)+social*14+1.2*novelty-.15*length*self.resolution-.35*visits-.008*bearing-exit_penalty
+            cost = paths.costs[key] if paths.costs is not None else length-1
+            score = 2*min(1, frontier)+social*14+1.2*novelty-.15*cost*self.resolution-.35*visits-.008*bearing-exit_penalty
             candidates.append((score, key, social))
         ranked = sorted(candidates, key=lambda value: -value[0])[:32]
         scored = []
         for score, key, social in ranked:
             x, z = self.cell_point(key)
-            penalty = self.exit_memory.travel_penalty(self.position, [x, 0., z], now)
+            penalty = self.exit_memory.return_penalty(self.position, [x, 0., z], now)
             scored.append((score-penalty, key, social))
         return max(scored, default=None, key=lambda value: value[0])
 
@@ -383,7 +429,9 @@ class ExplorationMemory:
         if self.position is None:
             return {'available': False, 'reason': '等待视觉定位'}
         self.expire_motions(now)
-        paths = self.reachable()
+        self.confirm_arrival(now)
+        self.arrived = {key: until for key, until in self.arrived.items() if until > now}
+        paths = self.reachable(explore_at=now)
         if self.stalls >= 2:
             self.reject_goal(now)
         if (self.goal in paths and paths.lengths[self.goal] >= 2 and self.stalls < 2
@@ -394,7 +442,8 @@ class ExplorationMemory:
         exit_key = self.topology.preferred_exit(paths, self.position, self.rejected, now)
         if exit_key is not None:
             x, z = self.cell_point(exit_key)
-            if self.exit_memory.return_penalty(self.position, [x, 0., z], now) > 4:
+            if (self.goal_on_cooldown(exit_key, now) or
+                    self.exit_memory.return_penalty(self.position, [x, 0., z], now) > 4):
                 exit_key = None
         if exit_key is not None:
             goal = (0., exit_key, 0.)
@@ -435,15 +484,16 @@ class ExplorationMemory:
         result, index, distance = [], 0, 0.
         start = self.position[[0, 2]].copy()
         while index < len(path)-1 and len(result) < 32:
-            end = index
+            end, route_cost = index, 0.
             for candidate in range(index+1, min(len(path), index+25)):
                 target = self.cell_point(path[candidate])
                 length = float(np.linalg.norm(target-start))
                 if length > 3. or distance+length > 12.:
                     break
-                route_cost = sum(paths.penalties.get(cell, 1.)*self.resolution for cell in path[index+1:candidate+1])
-                if self.clear_segment(path[candidate], start) and (candidate == index+1
-                        or self.shortcut_cost(path[candidate], paths, start) <= route_cost*1.08):
+                route_cost += paths.penalties.get(path[candidate], 1.)*self.resolution
+                if candidate != index+1 and self.shortcut_cost(path[candidate], paths, start) > route_cost*1.08:
+                    continue
+                if self.clear_segment(path[candidate], start):
                     end = candidate
             if end == index:
                 break

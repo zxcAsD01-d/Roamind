@@ -102,7 +102,7 @@ class ExplorationDrive:
                 distance = float(np.linalg.norm(delta[[0, 2]]))
                 if distance > .35:
                     target = memory.position+delta*(distance+1.2)/distance
-                    score -= memory.exit_memory.travel_penalty(memory.position, target, now)
+                    score -= memory.exit_memory.return_penalty(memory.position, target, now)
                     candidates.append((score-.1*distance, memory.bearing_to(delta), min(3., distance+1.2)))
         for item in observation.get('objects', []):
             box = item.get('box')
@@ -134,7 +134,7 @@ class ExplorationDrive:
             vector = target-memory.position
             length = float(np.linalg.norm(vector[[0, 2]]))
             score = 3.+9*portal['confidence']-.12*distance
-            score -= memory.exit_memory.travel_penalty(memory.position, target, now)
+            score -= memory.exit_memory.return_penalty(memory.position, target, now)
             candidates.append((score, memory.bearing_to(vector), min(3., length)))
         return candidates
 
@@ -176,8 +176,9 @@ class ExplorationDrive:
         exits = self.exit_candidates(observation, memory)
         candidates = [(score-.015*abs(wrap(bearing-navigation['bodyBearing'])), bearing, distance, 'seek_possible_exit')
                       for score, bearing, distance in exits]
+        tracking = observation.get('stereo', {}).get('mapping') and memory.position is not None
         if self.commit_heading is not None and now < self.commit_until:
-            candidates.append((6., wrap(self.view-self.commit_heading), 3., 'explore'))
+            candidates.append((3. if tracking else 6., wrap(self.view-self.commit_heading), 3., 'explore'))
         # Missing, stale or short depth is an information gap, never a stop sign.
         forward = navigation['bodyBearing']
         candidates.append((2., forward, 3., 'explore'))
@@ -186,11 +187,9 @@ class ExplorationDrive:
             score = 2.+.2*min(4., sector['clearance'])-.02*abs(wrap(bearing-forward))
             candidates.append((score, bearing, 3., 'explore'))
         candidates += [(0., wrap(forward+angle), 2., 'explore') for angle in (-60, 60, -120, 120, 180)]
-        if observation.get('stereo', {}).get('mapping'):
-            candidates = [(score-self.attempt_penalty(target, now)-(memory.exit_memory.travel_penalty(memory.position, target, now)
-                                  if intent == 'explore' and target is not None else 0.), bearing, distance, intent)
-                          for score, bearing, distance, intent in candidates
-                          for target in [self.world_target(bearing, distance, memory)]]
+        if tracking:
+            candidates = [(score-self.probe_penalty(bearing, distance, intent, memory, now), bearing, distance, intent)
+                          for score, bearing, distance, intent in candidates]
         viable = [item for item in candidates if not self.blocked(wrap(self.view-item[1]), memory, now)]
         if not viable:
             self.failure(memory, now, turning=True)
@@ -202,3 +201,16 @@ class ExplorationDrive:
             self.commit_until = now+30
         return self.command('forward', bearing, distance, intent,
                             '优先疑似出口，未知深度继续米级探索；实际受阻后回头换路')
+
+    def probe_penalty(self, bearing, distance, intent, memory, now):
+        target = self.world_target(bearing, distance, memory)
+        if target is None:
+            return 0.
+        penalty = self.attempt_penalty(target, now)
+        penalty += memory.exit_memory.retrace_penalty(memory.position, target, now)
+        # Portal/door candidates already carry their crossing penalty.
+        if intent == 'explore':
+            penalty += memory.exit_memory.return_penalty(memory.position, target, now)
+        if memory.goal_on_cooldown(memory.key(target), now):
+            penalty += 6.
+        return penalty

@@ -6,6 +6,7 @@ import uuid
 from collections import OrderedDict
 
 from map_geometry import MapGeometry, pack_keys
+from stereo_depth import free_space_conflicts
 
 import cv2
 import numpy as np
@@ -33,6 +34,8 @@ class SemanticMap:
         self.geometry = MapGeometry(voxel_size)
         self.geometry_ms = 0.
         self._snapshot_cache = None
+        self._last_visibility_check = float('-inf')
+        self._cleared_at = {}
 
     @staticmethod
     def world_points(points, pose):
@@ -42,15 +45,48 @@ class SemanticMap:
         points, colors, rows, cols = frame.mapping_points(stride=4)
         supported = frame.valid if frame.surface_valid is None else frame.surface_valid
         self._merge(self.world_points(points, pose), colors, supported[rows, cols], timestamp)
+        self._clear_weak_voxels(frame, pose, timestamp)
         self._expire(timestamp, pose[:3, 3])
         self.center = pose[:3, 3].copy()
         self.revision += 1
+
+    def _clear_weak_voxels(self, frame, pose, timestamp):
+        if timestamp <= self._last_visibility_check:
+            return
+        self._last_visibility_check = timestamp
+        # Annotations may still arrive for earlier frames; don't resurrect cleared points.
+        self._cleared_at = {key: stamp for key, stamp in self._cleared_at.items() if timestamp-stamp <= 4.}
+        candidates = [(key, voxel) for key, voxel in self.voxels.items()
+                      if voxel['measured'] and voxel['frames'] == 1 and voxel['lastSeen'] < timestamp]
+        if not candidates:
+            return
+        points = np.asarray([voxel['point'] for _, voxel in candidates])
+        optical = (points-pose[:3, 3])@pose[:3, :3]
+        conflicts = free_space_conflicts(frame, optical, self.voxel_size)
+        removed = []
+        for (key, voxel), conflict in zip(candidates, conflicts):
+            if not conflict:
+                voxel.pop('freeSpaceVotes', None)
+            elif voxel.get('freeSpaceVotes', 0) == 1:
+                self._cleared_at[key] = timestamp
+                del self.voxels[key]
+                removed.append(key)
+            else:
+                voxel['freeSpaceVotes'] = 1
+        if removed:
+            self._invalidate_removed(removed, refresh=True)
 
     def _merge(self, world, colors, measured, timestamp, label=0, confidence=0., instance=''):
         """Reduce observations and update geometry statistics in NumPy batches."""
         if not len(world):
             return []
         keys, points, rgb, direct = self._reduce(world, colors, measured)
+        if self._cleared_at:
+            keep = [self._cleared_at.get(key, float('-inf')) < timestamp for key in keys]
+            keys = [key for key, retain in zip(keys, keep) if retain]
+            if not keys:
+                return []
+            points, rgb, direct = points[keep], rgb[keep], direct[keep]
         records = [self.voxels.get(key) for key in keys]
         existing = np.array([i for i, record in enumerate(records) if record is not None], dtype=int)
         if len(existing):
@@ -178,17 +214,20 @@ class SemanticMap:
             key, _ = self.voxels.popitem(last=False)
             removed.append(key)
         if removed:
-            self.geometry.removed(removed)
-            self._geometry_dirty = True
-            if expired_geometry:
-                self._geometry_updated = float('-inf')
-            self._snapshot_cache = None
-            self.revision += 1
+            self._invalidate_removed(removed, refresh=expired_geometry)
         objects = {key: item for key, item in self.objects.items()
                    if timestamp-item['lastSeen'] < (300 if item['label'] in self.dynamic_labels else self.environment_age)}
         if len(objects) != len(self.objects):
             self.revision += 1
         self.objects = objects
+
+    def _invalidate_removed(self, removed, refresh):
+        self.geometry.removed(removed)
+        self._geometry_dirty = True
+        if refresh:
+            self._geometry_updated = float('-inf')
+        self._snapshot_cache = None
+        self.revision += 1
 
     @staticmethod
     def surface(frame, box):
@@ -347,6 +386,13 @@ class SemanticMap:
                 'geometry': 'visible-surface-only'}
         self.objects[identity] = item
         return item
+
+    def planning_points(self, now):
+        """Measured fused voxels before any rendering stride or surface completion."""
+        self._expire(now, self.center)
+        return {'frame': 'visual-odometry', 'mapId': self.map_id, 'revision': self.revision,
+                'voxelSize': self.voxel_size,
+                'measuredPoints': [v['point'].tolist() for v in self.voxels.values() if v['measured']]}
 
     def snapshot(self, timestamp=None):
         now = time.time() if timestamp is None else timestamp

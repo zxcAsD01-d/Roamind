@@ -535,7 +535,10 @@ class MissionRuntimeTests(unittest.TestCase):
         runtime.behavior.POLICY.reset('ready')
         runtime.sync({'clientId': 'ready', 'state': {'position': [0, .92, 0], 'heading': 0}})
         decision = {'decisionId': 'confirmed', 'mission': {'ready': True}, 'reason': '社交条件已达成'}
-        with patch.object(runtime.behavior.POLICY, 'decide', return_value=decision), patch.object(runtime.behavior.POLICY, 'feedback_for'):
+        with (patch.object(runtime.behavior.POLICY, 'decide', return_value=decision),
+              patch.object(runtime.behavior.POLICY, 'feedback_for'),
+              patch.object(runtime.lumen_actions, 'supports', return_value=True),
+              patch('social_actions.find', return_value=None)):
             result = runtime.autonomy_decide({'clientId': 'ready'})
         self.assertTrue(result['completed'])
         self.assertEqual(len(runtime.COMMANDS), 1)

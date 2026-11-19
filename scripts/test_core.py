@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 PATTERNS = ('test_overlap.py', 'test_command_reports.py', 'test_world.py',
             'test_tracking.py', 'test_intent_route.py', 'test_social_engine.py',
-            'test_life_policy.py', 'test_navigation_memory.py',
-            'test_mcp_contract.py')
+            'test_life_policy.py', 'test_navigation_memory.py', 'test_aggressive_exploration.py',
+            'test_mcp_contract.py', 'test_ardy_world.py')
 suite = unittest.TestSuite()
 for pattern in PATTERNS:
     suite.addTests(unittest.defaultTestLoader.discover(str(ROOT / 'tests'), pattern=pattern))
